@@ -23,9 +23,7 @@ Author: ye.tao<ye.tao@redx.com.au>
 from datetime import datetime
 import pandas as pd
 import numpy as np
-import optuna
 import streamlit as st
-from tabulate import tabulate
 
 
 class Battery:
@@ -266,31 +264,31 @@ class PeakValleyScheduler():
         return ['current_price', 'current_time', 'current_usage', 'current_soc', 'current_pv']
 
 
-def find_optimal_parameters():
+# def find_optimal_parameters():
 
-    def objective(trial):
-        # Define the search space for the parameters
-        buy_percentile = trial.suggest_int('buy_percentile', 0, 30)
-        sell_percentile = trial.suggest_int('sell_percentile', 30, 100)
-        peak_percentile = trial.suggest_int('peak_percentile', 30, 100)
-        look_back_days = trial.suggest_int('look_back_days', 1, 20)
+#     def objective(trial):
+#         # Define the search space for the parameters
+#         buy_percentile = trial.suggest_int('buy_percentile', 0, 30)
+#         sell_percentile = trial.suggest_int('sell_percentile', 30, 100)
+#         peak_percentile = trial.suggest_int('peak_percentile', 30, 100)
+#         look_back_days = trial.suggest_int('look_back_days', 1, 20)
 
-        # Run the simulation and get the power cost savings
-        simulator = Simulator(date_start='2021-07-01', date_end='2022-03-03', buy_percentile=buy_percentile,
-                              sell_percentile=sell_percentile, peak_percentile=peak_percentile, look_back_days=look_back_days)
-        simulator.run_simulation()
-        power_cost_savings = simulator.get_power_cost_savings()
+#         # Run the simulation and get the power cost savings
+#         simulator = Simulator(date_start='2021-07-01', date_end='2022-03-03', buy_percentile=buy_percentile,
+#                               sell_percentile=sell_percentile, peak_percentile=peak_percentile, look_back_days=look_back_days)
+#         simulator.run_simulation()
+#         power_cost_savings = simulator.get_power_cost_savings()
 
-        return power_cost_savings
+#         return power_cost_savings
 
-    study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=100)
+#     study = optuna.create_study(direction='minimize')
+#     study.optimize(objective, n_trials=100)
 
-    best_params = study.best_params
-    best_value = study.best_value
+#     best_params = study.best_params
+#     best_value = study.best_value
 
-    print("Best Parameters:", best_params)
-    print("Best Value:", best_value)
+#     print("Best Parameters:", best_params)
+#     print("Best Value:", best_value)
 
 
 if __name__ == '__main__':
