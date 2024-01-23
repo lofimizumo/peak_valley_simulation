@@ -124,7 +124,7 @@ class Simulator:
                             price, action, self.get_power_cost(), self.get_power_cost_savings(), power_delta])
         # Print the log data in a table format
         df = pd.DataFrame(log_data, columns=[
-                          'time', 'battery_soc', 'price', 'action', 'power_delta' , 'cost', 'cost_savings'])
+                          'time', 'battery_soc', 'price', 'action', 'cost', 'cost_savings', 'power_delta'])
         ret = {"df": df, "total_saved": self.get_power_cost_savings() / self.get_power_cost()*100,
                "total_backflow": sum([1 for i in max_power_feedin if i])/len(max_power_feedin)*100}
         return ret
