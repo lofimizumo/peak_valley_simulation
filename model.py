@@ -319,17 +319,19 @@ if __name__ == '__main__':
     # st.code(tb_2, language='text')
     st.write(df)
     st.subheader(f"Total cost savings: {ret['total_saved']:.2f}%")
+    st.markdown("---")
     st.subheader(
         f"Percentage of time with anti-backflow: {ret['total_backflow']:.2f}%")
     
+    st.markdown("---")
     df_discharge = df[df['action'] == 'Discharge']
     df_discharge = df_discharge[df_discharge['power_delta'] > 0]
     hist_discharge = np.histogram(df_discharge['price'], bins=[0,10,20,30,40,50,60,70,80,300], weights=0.1*df_discharge['power_delta'])
     df_hist = pd.DataFrame(hist_discharge)
     df_hist_inverted = df_hist.T
     df_hist_inverted.columns = ['y', 'x']
+    st.markdown("---")
     st.subheader("Discharge price distribution")
     st.bar_chart(df_hist_inverted, x='x', y='y')
-    st.subheader("Discharge price distribution (Pie Chart)")
-    st.area_chart(df_hist_inverted, x='x', y='y')
+
 
