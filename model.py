@@ -323,7 +323,7 @@ if __name__ == '__main__':
         f"Percentage of time with anti-backflow: {ret['total_backflow']:.2f}%")
     
     df_discharge = df[df['action'] == 'Discharge']
-    df_discharge = df_discharge[df_discharge['power_delta'] > 0]
+    df_discharge = df_discharge[df_discharge['power_delta'] < 0]
     hist_discharge = np.histogram(df_discharge['price'], bins=[0,10,20,30,40,50,60,70,80,300], weights=0.1*df_discharge['power_delta'])
     df_hist = pd.DataFrame(hist_discharge)
     df_hist_inverted = df_hist.T
