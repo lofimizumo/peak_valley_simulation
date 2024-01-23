@@ -328,9 +328,10 @@ if __name__ == '__main__':
     df_hist = pd.DataFrame(hist_discharge)
     df_hist_inverted = df_hist.T
     df_hist_inverted.columns = ['y', 'x']
+    df_hist_inverted['y'] = -df_hist_inverted['y']
     st.markdown("---")
     st.subheader("Discharge price distribution")
-    st.write("The following chart shows the distribution of the price when the battery is discharging.")
+    st.write("The following chart shows the distribution of the feedin price when the battery is discharging.")
     st.bar_chart(df_hist_inverted, x='x', y='y')
 
 
