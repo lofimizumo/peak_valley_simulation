@@ -314,12 +314,12 @@ if __name__ == '__main__':
     ret = simulator.run_simulation()
     df = ret["df"]
     # Display command line output using tabulate
-    st.write("Simulation Results")
+    st.subheader("Simulation Results")
     # st.code(tb_1, language='text')
     # st.code(tb_2, language='text')
     st.write(df)
-    st.write(f"Total cost savings: {ret['total_saved']:.2f}%")
-    st.write(
+    st.subheader(f"Total cost savings: {ret['total_saved']:.2f}%")
+    st.subheader(
         f"Percentage of time with anti-backflow: {ret['total_backflow']:.2f}%")
     
     df_discharge = df[df['action'] == 'Discharge']
@@ -328,8 +328,8 @@ if __name__ == '__main__':
     df_hist = pd.DataFrame(hist_discharge)
     df_hist_inverted = df_hist.T
     df_hist_inverted.columns = ['y', 'x']
-    st.write("Discharge price distribution")
+    st.subheader("Discharge price distribution")
     st.bar_chart(df_hist_inverted, x='x', y='y')
-    st.write("Discharge price distribution (Pie Chart)")
+    st.subheader("Discharge price distribution (Pie Chart)")
     st.area_chart(df_hist_inverted, x='x', y='y')
 
