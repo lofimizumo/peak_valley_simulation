@@ -319,8 +319,10 @@ if __name__ == '__main__':
     # st.code(tb_2, language='text')
     st.write(df)
     st.subheader(f"Total cost savings: {ret['total_saved']:.2f}%")
+    st.write("this shows the percentage of cost savings with the battery against w/o battery.")
     st.subheader(
-        f"Percentage of time with anti-backflow: {ret['total_backflow']:.2f}%")
+        f"Percentage of time with anti-backflow disabled: {ret['total_backflow']:.2f}%")
+    st.write("this shows the percentage of time when the battery is discharging without anti-backflow enabled. This is a good indicator of how much the battery is trying to make money from high price rather than cover the user usage.")
     
     df_discharge = df[df['action'] == 'Discharge']
     df_discharge = df_discharge[df_discharge['power_delta'] < 0]
