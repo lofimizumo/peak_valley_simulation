@@ -316,6 +316,12 @@ class SimulationVisualizer:
         df_day = self.df[(self.df['time'] >= start_date) & (self.df['time'] < end_date)]
         df_30min = df_day[['time','price', 'power_delta']].resample('30min', on='time').median()
         return df_30min.reset_index()
+
+    def get_discharge_percentage(self):
+        discharge_days = self.df[self.df['action'] == 'Discharge']['time'].dt.date.nunique()
+        total_days = self.df['time'].dt.date.nunique()
+        discharge_percentage = (discharge_days / total_days) * 100
+        return discharge_percentage
     
 
 if __name__ == '__main__':
@@ -356,13 +362,25 @@ if __name__ == '__main__':
         st.write("The following table shows the simulation results on a 30-min freq from the start date to the end date.")
         st.write("time: the time of the day battery soc: the state of charge of the battery price: the price of the electricity action: the action taken by the battery cost: the cost of electricity without battery cost_savings: the cost of electricity with battery")
         st.write(df)
-        st.subheader(f"Total cost savings: {ret['total_saved']:.2f}%")
+        st.subheader(f"Total cost savings:")
+        text = f"${ret['total_saved']:.2f}"
+        st.markdown(f"<h3 style='text-align: center; color: #0068c9;'>{text}</h1>",
+                    unsafe_allow_html=True)
         st.write(
             "this shows the percentage of cost savings with the battery against w/o battery.")
         st.subheader(
-            f"Percentage of time with anti-backflow disabled: {ret['total_backflow']:.2f}%")
+            f"Percentage of time with anti-backflow disabled:")
+        text = f"{ret['total_backflow']:.2f}%"
+        st.markdown(f"<h3 style='text-align: center; color: #0068c9;'>{text}</h1>",
+                    unsafe_allow_html=True)
         st.write("this shows the percentage of time when the battery is discharging without anti-backflow enabled. This is a good indicator of how much the battery is trying to make money from high price rather than cover the user usage.")
 
+        st.subheader(
+            f"Battery Discharging Percentage:")
+        percentage = SimulationVisualizer(df).get_discharge_percentage()
+        text = f"{percentage:.2f}%"
+        st.markdown(f"<h3 style='text-align: center; color: #0068c9;'>{text}</h1>",
+                    unsafe_allow_html=True)
         df_discharge = df[df['action'] == 'Discharge']
         df_discharge = df_discharge[df_discharge['power_delta'] < 0]
         hist_discharge = np.histogram(df_discharge['price'], bins=[
