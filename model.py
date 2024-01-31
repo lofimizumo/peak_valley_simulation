@@ -258,7 +258,7 @@ class PeakValleyScheduler():
 
         command = {"command": "Idle"}
 
-        if self._is_charging_period(current_time) and (current_price <= buy_price or current_pv > current_usage):
+        if self._is_charging_period(current_time) and (current_price <= buy_price):
             power = 2500 if device_type == "5000" else 1500
             command = {'command': 'Charge', 'power': power,
                        'grid_charge': True if current_pv <= current_usage else False}
@@ -373,7 +373,7 @@ if __name__ == '__main__':
         jc_param3 = st.slider(
             "Charging Price Threshold", 0, 1000, 0, help="The value of fixed charging price threshold")
 
-    simulator = Simulator(date_start='2021-07-01', date_end='2022-03-03', price_gap = high_price_gap, buy_percentile=buy_percentile,
+    simulator = Simulator(date_start='2021-07-01', date_end='2022-06-22', price_gap = high_price_gap, buy_percentile=buy_percentile,
                           sell_percentile=sell_percentile, peak_percentile=peak_percentile, peak_price=peak_price, look_back_days=look_back_days, jc_param1=jc_param1, jc_param2=jc_param2, jc_param3=jc_param3, 
                           DisChgStart2=discharge_window_start.strftime('%H:%M'), 
                           DisChgEnd2=discharge_window_end.strftime('%H:%M'), 
