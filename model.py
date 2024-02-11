@@ -55,10 +55,10 @@ class Battery:
 
 class MockData:
 
-    def __init__(self, date_start='2022-01-01', date_end='2022-01-03', file_name='friend.csv'):
-        self.date_start = pd.to_datetime(date_start)
-        self.date_end = pd.to_datetime(date_end)
+    def __init__(self, file_name='friend.csv'):
         self.df = pd.read_csv(file_name)
+        self.date_start = self.df['time'].min()
+        self.date_end = self.df['time'].max()
         self.df_solar = pd.read_csv('solar_clean.csv')
         self._prepare_data()
         if file_name != 'friend.csv':
@@ -80,7 +80,7 @@ class MockData:
     def _prepare_data(self):
         self.df['time'] = pd.to_datetime(self.df['time'])
         self.df = self.df[(self.df['time'] >= self.date_start)
-                          & (self.df['time'] < self.date_end)]
+                          & (self.df['time'] <= self.date_end)]
         self.df = self.df.sort_values('time')
 
     def _prepare_solar_data(self):
@@ -118,7 +118,7 @@ class Simulator:
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(max_capacity=5000)
-        self.mock_data = MockData(date_start, date_end, file_name)
+        self.mock_data = MockData(file_name)
         self.cost_wo_battery = []
         self.cost_w_battery = []
         self.price_gap = price_gap
@@ -392,6 +392,8 @@ class SimulationVisualizer:
         end_date = start_date + pd.Timedelta(days=1)
         df_day = self.df[(self.df['time'] >= start_date)
                          & (self.df['time'] < end_date)]
+        if df_day.empty:
+            return pd.DataFrame()
         df_30min = df_day[['time', 'price', 'power_delta']
                           ].resample('30min', on='time').median()
         return df_30min.reset_index()
@@ -558,7 +560,8 @@ if __name__ == '__main__':
         st.subheader("Battery Discharging Distribution by Time")
         sim_visualizer = SimulationVisualizer(df)
 
-        d = st.date_input("Please choose date", date(2023, 1, 1))
+        d = st.date_input("Please choose date", date(2025, 1, 17))
         df_30min = sim_visualizer.get_resampled_data(d)
-        st.bar_chart(df_30min, x='time', y='power_delta')
-        st.bar_chart(df_30min, x='time', y='price')
+        if not df_30min.empty:
+            st.bar_chart(df_30min, x='time', y='power_delta')
+            st.bar_chart(df_30min, x='time', y='price')
