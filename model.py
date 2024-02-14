@@ -114,7 +114,7 @@ class Simulator:
 
     def __init__(self, date_start='2022-01-01', date_end='2022-01-31', price_gap=10, file_name=None, is_time_mode=False,
                  time_mode_discharge_start='16:00', time_mode_discharge_end='19:00',
-                 time_mode_charge_start = '04:00', time_mode_charge_end = '16:00',
+                 time_mode_charge_start='04:00', time_mode_charge_end='16:00',
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(max_capacity=5000)
@@ -123,18 +123,26 @@ class Simulator:
         self.cost_w_battery = []
         self.price_gap = price_gap
         self.is_time_mode = is_time_mode
-        self.time_mode_discharge_start = datetime.strptime(time_mode_discharge_start, '%H:%M').time()
-        self.time_mode_discharge_end = datetime.strptime(time_mode_discharge_end, '%H:%M').time()
-        self.time_mode_charge_start = datetime.strptime(time_mode_charge_start, '%H:%M').time()
-        self.time_mode_charge_end = datetime.strptime(time_mode_charge_end, '%H:%M').time()
+        self.time_mode_discharge_start = datetime.strptime(
+            time_mode_discharge_start, '%H:%M').time()
+        self.time_mode_discharge_end = datetime.strptime(
+            time_mode_discharge_end, '%H:%M').time()
+        self.time_mode_charge_start = datetime.strptime(
+            time_mode_charge_start, '%H:%M').time()
+        self.time_mode_charge_end = datetime.strptime(
+            time_mode_charge_end, '%H:%M').time()
+        total_discharge_duration = (self.time_mode_discharge_end.hour - self.time_mode_discharge_start.hour) * 60 + (
+            self.time_mode_discharge_end.minute - self.time_mode_discharge_start.minute)
+        self.discharge_power = max(
+            0, min(2500*120/total_discharge_duration, 2500))
 
     def get_time_mode_command(self, current_time):
         if self.is_time_mode:
             current_time = datetime.strptime(current_time, '%H:%M').time()
-            if current_time >= self.time_mode_discharge_start and current_time <= self.time_mode_discharge_end:
-                return {'command': 'Discharge', 'power': 1800, 'anti_backflow': False}
+            if current_time >= self.time_mode_discharge_start and current_time < self.time_mode_discharge_end:
+                return {'command': 'Discharge', 'power': self.discharge_power, 'anti_backflow': False}
             if current_time >= self.time_mode_charge_start and current_time <= self.time_mode_charge_end:
-                return {'command': 'Charge', 'power': 800, 'grid_charge': False}
+                return {'command': 'Charge', 'power': 1200, 'grid_charge': False}
         return {'command': 'Idle'}
 
     def run_simulation(self):
@@ -158,7 +166,7 @@ class Simulator:
             command, is_high_price = self.model.step(
                 row['price'], now, row['usage'],
                 self.battery_stats.state_of_charge, row['current_pv'] / 1000, device_type="2505")
-            if self.is_time_mode: 
+            if self.is_time_mode:
                 command = self.get_time_mode_command(now)
                 is_high_price = True
 
@@ -464,7 +472,8 @@ if __name__ == '__main__':
                           is_time_mode=on,
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
-                          time_mode_discharge_end=time_mode_end.strftime('%H:%M')
+                          time_mode_discharge_end=time_mode_end.strftime(
+                              '%H:%M')
                           )
     ret = simulator.run_simulation()
     df = ret["df"]
@@ -556,6 +565,7 @@ if __name__ == '__main__':
                          `cost_savings`: the cost of electricity with battery'''
         st.markdown(multi_md_text)
         st.write(df)
+        st.write(simulator.discharge_power)
     with col2:
         st.subheader("Battery Discharging Distribution by Time")
         sim_visualizer = SimulationVisualizer(df)
