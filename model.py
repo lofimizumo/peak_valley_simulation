@@ -27,6 +27,7 @@ import streamlit as st
 import glob
 import cProfile
 import pstats
+import typing
 
 
 class Battery:
@@ -93,6 +94,9 @@ class MockData:
         mean = 144
         std = 50
         self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * 4000
+        np.random.seed(1234)
+        rain_distribution = np.random.uniform(0.1, 1, 289)
+        # self.y = self.y * rain_distribution
 
     def _prepare_pv_data(self):
         # Vectorize the get_solar calculation
@@ -108,6 +112,9 @@ class MockData:
     def get_all_data(self):
         # Return the DataFrame instead of a generator
         return self.df[['time', 'price', 'current_pv', 'usage']]
+
+    def get_usages(self, date) -> pd.Series:
+        return self.df[self.df['date'] == date][['time', 'usage']]
 
 
 class Simulator:
@@ -136,13 +143,16 @@ class Simulator:
         self.discharge_power = max(
             0, min(2500*120/total_discharge_duration, 2500))
 
+    def get_usages(self, date: date) -> pd.Series:
+        return self.mock_data.get_usages(date)
+
     def get_time_mode_command(self, current_time):
         if self.is_time_mode:
             current_time = datetime.strptime(current_time, '%H:%M').time()
             if current_time >= self.time_mode_discharge_start and current_time < self.time_mode_discharge_end:
                 return {'command': 'Discharge', 'power': self.discharge_power, 'anti_backflow': False}
             if current_time >= self.time_mode_charge_start and current_time <= self.time_mode_charge_end:
-                return {'command': 'Charge', 'power': 1200, 'grid_charge': False}
+                return {'command': 'Charge', 'power': 1500, 'grid_charge': False}
         return {'command': 'Idle'}
 
     def run_simulation(self):
@@ -308,11 +318,12 @@ class PeakValleyScheduler():
         # Update price history every five minutes
         current_time = datetime.strptime(
             current_time, '%H:%M').time()
-        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute:
+        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute and (current_time <= self.t_chg_end1 and current_time >= self.t_chg_start1):
             self.last_updated_time = current_time
             self.price_history.append(current_price)
 
-        if len(self.price_history) > self.LookBackBars:
+        # if len(self.price_history) > self.LookBackBars:
+        if len(self.price_history) > 24:
             self.price_history.pop(0)
 
         # Buy and sell price based on historical data
@@ -332,7 +343,7 @@ class PeakValleyScheduler():
         command = {"command": "Idle"}
 
         if self._is_charging_period(current_time) and ((current_price <= buy_price) or (current_pv > current_usage)):
-            power = 2500 if device_type == "5000" else 1500
+            power = 2500 if device_type == "5000" else 800
             command = {'command': 'Charge', 'power': power,
                        'grid_charge': True if current_pv <= current_usage else False}
 
@@ -427,17 +438,17 @@ if __name__ == '__main__':
     with st.sidebar:
         on = st.toggle('Toggle Time Mode', help="Time Mode is a mode that uses a fixed time window for charging and discharging. When the time is within the window, the battery will charge or discharge based on the price. When the time is outside the window, the battery will be idle.")
         time_mode_start = st.time_input(
-            "Time Mode Discharging Start", datetime.strptime('16:00', '%H:%M').time())
+            "Time Mode Discharging Start", datetime.strptime('17:00', '%H:%M').time())
         time_mode_end = st.time_input(
             "Time Mode Discharging End", datetime.strptime('19:00', '%H:%M').time())
         selected_filename = st.selectbox("Select a filename", file_names)
         st.write("Simulation Parameters")
         buy_percentile = st.slider(
-            "Buy percentile", 1, 100, 30, help="Start to charge battery when price is below this value")
+            "Buy percentile", 1, 100, 20, help="Start to charge battery when price is below this value")
         sell_percentile = st.slider(
-            "Sell percentile", 1, 100, 30, help="Start to discharge battery when price is above this value")
+            "Sell percentile", 1, 100, 20, help="Start to discharge battery when price is above this value")
         peak_percentile = st.slider(
-            "Peak percentile", 1, 100, 70, help="Discharge w/o anti-backflow when price is above this value")
+            "Peak percentile", 1, 100, 30, help="Discharge w/o anti-backflow when price is above this value")
         peak_price = st.slider("Peak price",  1, 1000,
                                1000, help="Daytime peak price threshold")
         high_price_gap = st.slider("High Price gap",  1, 1000,
@@ -452,7 +463,7 @@ if __name__ == '__main__':
         charge_window_start = st.time_input(
             "Charging Window Start", datetime.strptime('08:00', '%H:%M').time())
         charge_window_end = st.time_input(
-            "Charging Window End", datetime.strptime('16:00', '%H:%M').time())
+            "Charging Window End", datetime.strptime('14:00', '%H:%M').time())
         st.write("Fixed Price Thresholds")
         jc_param1 = st.slider(
             "Weak Discharging Threshold", 0, 1000, 0, help="The value of fixed weak discharging (anti-backflow enabled) price threshold")
@@ -569,9 +580,17 @@ if __name__ == '__main__':
     with col2:
         st.subheader("Battery Discharging Distribution by Time")
         sim_visualizer = SimulationVisualizer(df)
+        day = st.date_input("Please choose date", date(2023, 9, 17))
+        usages = simulator.get_usages(np.datetime64(day))
+        usages['usage'] = usages['usage'] * 2000
 
-        d = st.date_input("Please choose date", date(2025, 1, 17))
-        df_30min = sim_visualizer.get_resampled_data(d)
+        df_30min = sim_visualizer.get_resampled_data(day)
         if not df_30min.empty:
+            df_30min['time'] = pd.to_datetime(df_30min['time'])
+            usages['time'] = pd.to_datetime(usages['time'])
+            combined_data = pd.merge(usages, df_30min[['time', 'power_delta']], on='time', how='left')
+            combined_data.set_index('time', inplace=True)
+
+            st.line_chart(combined_data)
             st.bar_chart(df_30min, x='time', y='power_delta')
             st.bar_chart(df_30min, x='time', y='price')
