@@ -93,7 +93,7 @@ class MockData:
         x = np.linspace(0, 288, 289)
         mean = 144
         std = 50
-        self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * 5000
+        self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * 4000
         np.random.seed(1234)
         rain_distribution = np.random.uniform(0.1, 1, 289)
         # self.y = self.y * rain_distribution
@@ -140,8 +140,12 @@ class Simulator:
             time_mode_charge_end, '%H:%M').time()
         total_discharge_duration = (self.time_mode_discharge_end.hour - self.time_mode_discharge_start.hour) * 60 + (
             self.time_mode_discharge_end.minute - self.time_mode_discharge_start.minute)
+        total_charge_duration = (self.time_mode_charge_end.hour - self.time_mode_charge_start.hour) * 60 + (
+            self.time_mode_charge_end.minute - self.time_mode_charge_start.minute)
         self.discharge_power = max(
             0, min(2500*120/total_discharge_duration, 2500))
+        self.charge_power = max(
+            0, min(1500*120/total_charge_duration, 1500))
 
     def get_usages(self, date: date) -> pd.Series:
         return self.mock_data.get_usages(date)
@@ -152,7 +156,7 @@ class Simulator:
             if current_time >= self.time_mode_discharge_start and current_time < self.time_mode_discharge_end:
                 return {'command': 'Discharge', 'power': self.discharge_power, 'anti_backflow': False}
             if current_time >= self.time_mode_charge_start and current_time <= self.time_mode_charge_end:
-                return {'command': 'Charge', 'power': 1500, 'grid_charge': False}
+                return {'command': 'Charge', 'power': 800, 'grid_charge': False}
         return {'command': 'Idle'}
 
     def run_simulation(self):
@@ -449,6 +453,10 @@ if __name__ == '__main__':
             "Time Mode Discharging Start", datetime.strptime('17:00', '%H:%M').time())
         time_mode_end = st.time_input(
             "Time Mode Discharging End", datetime.strptime('19:00', '%H:%M').time())
+        time_mode_charge_start = st.time_input(
+            "Time Mode Charging Start", datetime.strptime('07:00', '%H:%M').time())
+        time_mode_charge_end = st.time_input(
+            "Time Mode Charging End", datetime.strptime('13:00', '%H:%M').time())
         selected_filename = st.selectbox("Select a filename", file_names)
         st.write("Simulation Parameters")
         buy_percentile = st.slider(
@@ -492,6 +500,10 @@ if __name__ == '__main__':
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
                           time_mode_discharge_end=time_mode_end.strftime(
+                              '%H:%M'),
+                          time_mode_charge_start=time_mode_charge_start.strftime(
+                              '%H:%M'),
+                          time_mode_charge_end=time_mode_charge_end.strftime(
                               '%H:%M')
                           )
     ret = simulator.run_simulation()
