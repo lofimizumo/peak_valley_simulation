@@ -93,7 +93,7 @@ class MockData:
         x = np.linspace(0, 288, 289)
         mean = 144
         std = 50
-        self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * 4000
+        self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * 5000
         np.random.seed(1234)
         rain_distribution = np.random.uniform(0.1, 1, 289)
         # self.y = self.y * rain_distribution
@@ -121,7 +121,7 @@ class Simulator:
 
     def __init__(self, date_start='2022-01-01', date_end='2022-01-31', price_gap=10, file_name=None, is_time_mode=False,
                  time_mode_discharge_start='16:00', time_mode_discharge_end='19:00',
-                 time_mode_charge_start='04:00', time_mode_charge_end='16:00',
+                 time_mode_charge_start='08:00', time_mode_charge_end='16:00',
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(max_capacity=5000)
@@ -159,8 +159,6 @@ class Simulator:
         # Get all mock data at once
         mock_data_df = self.mock_data.get_all_data().copy()
         mock_data_df['price_dollar'] = mock_data_df['price'] / 100
-        mock_data_df['feedin_price_dollar'] = (
-            mock_data_df['price'] - self.price_gap) / 100
         mock_data_df['usage_with_pv'] = mock_data_df['usage'] - \
             mock_data_df['current_pv'] / 1000
 
@@ -203,6 +201,10 @@ class Simulator:
         # 4. Update cost
         mock_data_df['price_gap'] = mock_data_df.apply(
             lambda row: 10 if not row['is_high_price'] else self.price_gap, axis=1)
+        mock_data_df['feedin_price_dollar'] = (
+            mock_data_df['price'] - mock_data_df['price_gap']) / 100
+        mock_data_df['feedin_price_dollar'] = mock_data_df['feedin_price_dollar'].clip(
+            lower=0)
         mock_data_df['usage_with_pv_battery'] = mock_data_df['usage_with_pv'] + \
             mock_data_df['power_delta'] / 1000
         mock_data_df['cost_wo_battery'] = mock_data_df['price_dollar'] * \
@@ -309,6 +311,7 @@ class PeakValleyScheduler():
 
     def init_price_history(self):
         self.price_history = [20 for i in range(self.LookBackBars)]
+        self.peak_price_history = [20 for i in range(self.LookBackBars)]
 
     def step(self, current_price, current_time, current_usage, current_soc, current_pv, device_type):
 
@@ -321,10 +324,15 @@ class PeakValleyScheduler():
         if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute and (current_time <= self.t_chg_end1 and current_time >= self.t_chg_start1):
             self.last_updated_time = current_time
             self.price_history.append(current_price)
+        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute and (current_time <= self.t_dis_end2 and current_time >= self.t_dis_start2):
+            self.last_updated_time = current_time
+            self.peak_price_history.append(current_price)
 
         # if len(self.price_history) > self.LookBackBars:
         if len(self.price_history) > 24:
             self.price_history.pop(0)
+        if len(self.peak_price_history) > 24:
+            self.peak_price_history.pop(0)
 
         # Buy and sell price based on historical data
         buy_price, sell_price = np.percentile(
@@ -334,8 +342,8 @@ class PeakValleyScheduler():
         # use hard coded peak price for now
         peak_price = self.PeakPrice
         is_high_price = False
-        if current_price > sell_price:
-            current_feedin_price = current_price - self.price_gap
+        current_feedin_price = current_price - self.price_gap
+        if current_price > np.percentile(self.peak_price_history, 90):
             is_high_price = True
         else:
             current_feedin_price = current_price - 10
@@ -446,13 +454,13 @@ if __name__ == '__main__':
         buy_percentile = st.slider(
             "Buy percentile", 1, 100, 20, help="Start to charge battery when price is below this value")
         sell_percentile = st.slider(
-            "Sell percentile", 1, 100, 20, help="Start to discharge battery when price is above this value")
+            "Sell percentile", 1, 100, 30, help="Start to discharge battery when price is above this value")
         peak_percentile = st.slider(
-            "Peak percentile", 1, 100, 30, help="Discharge w/o anti-backflow when price is above this value")
+            "Peak percentile", 1, 100, 70, help="Discharge w/o anti-backflow when price is above this value")
         peak_price = st.slider("Peak price",  1, 1000,
                                1000, help="Daytime peak price threshold")
-        high_price_gap = st.slider("High Price gap",  1, 1000,
-                                   10, help="The gap between the feedin price and the buy/sell price when the price is high (>sell price)")
+        high_price_gap = st.slider("High Price gap",  1, 50,
+                                   12, help="The gap between the feedin price and the buy/sell price when the price is high (>sell price)")
         look_back_days = st.slider(
             "Look Back Days", 1, 20, 1, help="The buy/sell price is calculated based on the historical data in the past X days")
         st.write("Time window for charging and discharging")
@@ -588,7 +596,8 @@ if __name__ == '__main__':
         if not df_30min.empty:
             df_30min['time'] = pd.to_datetime(df_30min['time'])
             usages['time'] = pd.to_datetime(usages['time'])
-            combined_data = pd.merge(usages, df_30min[['time', 'power_delta']], on='time', how='left')
+            combined_data = pd.merge(
+                usages, df_30min[['time', 'power_delta']], on='time', how='left')
             combined_data.set_index('time', inplace=True)
 
             st.line_chart(combined_data)
