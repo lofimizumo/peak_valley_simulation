@@ -58,11 +58,12 @@ class Battery:
 
 class MockData:
 
-    def __init__(self, file_name='friend.csv'):
+    def __init__(self, file_name='friend.csv', **kwargs):
         self.df = pd.read_csv(file_name)
         self.date_start = self.df['time'].min()
         self.date_end = self.df['time'].max()
         self.df_solar = pd.read_csv('solar_clean.csv')
+        self.solar_kw = kwargs.get('solar_kw', 5)
         self._prepare_data()
         if file_name != 'friend.csv':
             self.df = self.get_simulated_amber_price(self.df)
@@ -95,7 +96,7 @@ class MockData:
         x = np.linspace(0, 288, 289)
         mean = 144
         std = 50
-        self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * 4000
+        self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * self.solar_kw * 1000
         np.random.seed(1234)
         rain_distribution = np.random.uniform(0.1, 1, 289)
         # self.y = self.y * rain_distribution
@@ -125,10 +126,11 @@ class Simulator:
                  time_mode_discharge_start='16:00', time_mode_discharge_end='19:00',
                  time_mode_charge_start='08:00', time_mode_charge_end='16:00',
                  is_battery_only=False,
+                 solar_kw=5,
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(max_capacity=5000)
-        self.mock_data = MockData(file_name)
+        self.mock_data = MockData(file_name, solar_kw=solar_kw)
         self.cost_wo_battery = []
         self.cost_w_battery = []
         self.price_gap = price_gap
@@ -231,7 +233,8 @@ class Simulator:
 
         # Calculate total backflow percentage
         if len(max_power_feedin) > 0:
-            total_backflow_percentage = sum(max_power_feedin) / len(max_power_feedin) * 100
+            total_backflow_percentage = sum(
+                max_power_feedin) / len(max_power_feedin) * 100
         else:
             total_backflow_percentage = 0
 
@@ -458,7 +461,7 @@ if __name__ == '__main__':
 
     # Run the simulation
     with st.sidebar:
-        on = st.toggle('Toggle Time Mode', help="Time Mode is a mode that uses a fixed time window for charging and discharging. When the time is within the window, the battery will charge or discharge based on the price. When the time is outside the window, the battery will be idle.")
+        on = st.toggle('Toggle Time Mode',value=True, help="Time Mode is a mode that uses a fixed time window for charging and discharging. When the time is within the window, the battery will charge or discharge based on the price. When the time is outside the window, the battery will be idle.")
         time_mode_start = st.time_input(
             "Time Mode Discharging Start", datetime.strptime('17:00', '%H:%M').time())
         time_mode_end = st.time_input(
@@ -470,6 +473,7 @@ if __name__ == '__main__':
         selected_filename = st.selectbox("Select a filename", file_names)
         st.write("Simulation Parameters")
         solar_on = st.toggle('Toggle Solar Only', help="Solar Only Mode")
+        solar_kw = st.slider("Solar KW", 0, 15, 5, help="Solar KW")
         buy_percentile = st.slider(
             "Buy percentile", 1, 100, 20, help="Start to charge battery when price is below this value")
         sell_percentile = st.slider(
@@ -509,6 +513,7 @@ if __name__ == '__main__':
                           ChgEnd1=charge_window_end.strftime('%H:%M'),
                           is_time_mode=on,
                           is_battery_only=solar_on,
+                          solar_kw=solar_kw,
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
                           time_mode_discharge_end=time_mode_end.strftime(
