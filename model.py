@@ -46,6 +46,8 @@ class Battery:
             power = -power
         elif cmd == 'Charge':
             power = power
+        elif cmd == 'Idle':
+            power = 0
         delta_power = power * self.cycle_times / 60
         new_soc = max(0, min(self.state_of_charge +
                       delta_power, self.max_capacity))
@@ -122,6 +124,7 @@ class Simulator:
     def __init__(self, date_start='2022-01-01', date_end='2022-01-31', price_gap=10, file_name=None, is_time_mode=False,
                  time_mode_discharge_start='16:00', time_mode_discharge_end='19:00',
                  time_mode_charge_start='08:00', time_mode_charge_end='16:00',
+                 is_battery_only=False,
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(max_capacity=5000)
@@ -130,6 +133,7 @@ class Simulator:
         self.cost_w_battery = []
         self.price_gap = price_gap
         self.is_time_mode = is_time_mode
+        self.is_battery_only = is_battery_only
         self.time_mode_discharge_start = datetime.strptime(
             time_mode_discharge_start, '%H:%M').time()
         self.time_mode_discharge_end = datetime.strptime(
@@ -181,6 +185,9 @@ class Simulator:
             if self.is_time_mode:
                 command = self.get_time_mode_command(now)
                 is_high_price = True
+            if self.is_battery_only:
+                is_high_price = False
+                command['command'] = 'Idle'
 
             # 3. Update battery state
             power_delta = self.battery_stats.get_actual_power_delta(
@@ -204,11 +211,11 @@ class Simulator:
 
         # 4. Update cost
         mock_data_df['price_gap'] = mock_data_df.apply(
-            lambda row: 10 if not row['is_high_price'] else self.price_gap, axis=1)
+            lambda row: 9 if not row['is_high_price'] else self.price_gap, axis=1)
         mock_data_df['feedin_price_dollar'] = (
             mock_data_df['price'] - mock_data_df['price_gap']) / 100
         mock_data_df['feedin_price_dollar'] = mock_data_df['feedin_price_dollar'].clip(
-            lower=0)
+            lower=-5)
         mock_data_df['usage_with_pv_battery'] = mock_data_df['usage_with_pv'] + \
             mock_data_df['power_delta'] / 1000
         mock_data_df['cost_wo_battery'] = mock_data_df['price_dollar'] * \
@@ -221,8 +228,12 @@ class Simulator:
         total_cost_w_battery = mock_data_df['cost_w_battery'].sum()
         total_savings = total_cost_wo_battery - total_cost_w_battery
         total_saved_percentage = total_savings / total_cost_wo_battery * 100
-        total_backflow_percentage = sum(
-            max_power_feedin) / len(max_power_feedin) * 100
+
+        # Calculate total backflow percentage
+        if len(max_power_feedin) > 0:
+            total_backflow_percentage = sum(max_power_feedin) / len(max_power_feedin) * 100
+        else:
+            total_backflow_percentage = 0
 
         # Prepare final DataFrame
         final_df = mock_data_df[['time', 'battery_soc', 'price',
@@ -339,11 +350,10 @@ class PeakValleyScheduler():
             self.peak_price_history.pop(0)
 
         # Buy and sell price based on historical data
-        buy_price, sell_price = np.percentile(
-            self.price_history, [self.BuyPct, self.SellPct])
+        sell_price = np.percentile(
+            self.price_history, self.SellPct)
+        buy_price = np.percentile(self.peak_price_history, self.BuyPct)
 
-        # peak_price = np.percentile(self.price_history, self.PeakPct)
-        # use hard coded peak price for now
         peak_price = self.PeakPrice
         is_high_price = False
         current_feedin_price = current_price - self.price_gap
@@ -355,7 +365,7 @@ class PeakValleyScheduler():
         command = {"command": "Idle"}
 
         if self._is_charging_period(current_time) and ((current_price <= buy_price) or (current_pv > current_usage)):
-            power = 2500 if device_type == "5000" else 800
+            power = 2500 if device_type == "5000" else 1500
             command = {'command': 'Charge', 'power': power,
                        'grid_charge': True if current_pv <= current_usage else False}
 
@@ -459,6 +469,7 @@ if __name__ == '__main__':
             "Time Mode Charging End", datetime.strptime('13:00', '%H:%M').time())
         selected_filename = st.selectbox("Select a filename", file_names)
         st.write("Simulation Parameters")
+        solar_on = st.toggle('Toggle Solar Only', help="Solar Only Mode")
         buy_percentile = st.slider(
             "Buy percentile", 1, 100, 20, help="Start to charge battery when price is below this value")
         sell_percentile = st.slider(
@@ -468,7 +479,7 @@ if __name__ == '__main__':
         peak_price = st.slider("Peak price",  1, 1000,
                                1000, help="Daytime peak price threshold")
         high_price_gap = st.slider("High Price gap",  1, 50,
-                                   12, help="The gap between the feedin price and the buy/sell price when the price is high (>sell price)")
+                                   11, help="The gap between the feedin price and the buy/sell price when the price is high (>sell price)")
         look_back_days = st.slider(
             "Look Back Days", 1, 20, 1, help="The buy/sell price is calculated based on the historical data in the past X days")
         st.write("Time window for charging and discharging")
@@ -497,6 +508,7 @@ if __name__ == '__main__':
                           ChgStart1=charge_window_start.strftime('%H:%M'),
                           ChgEnd1=charge_window_end.strftime('%H:%M'),
                           is_time_mode=on,
+                          is_battery_only=solar_on,
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
                           time_mode_discharge_end=time_mode_end.strftime(
