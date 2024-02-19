@@ -329,7 +329,6 @@ class PeakValleyScheduler():
 
     def init_price_history(self):
         self.price_history = [20 for i in range(self.LookBackBars)]
-        self.peak_price_history = [20 for i in range(self.LookBackBars)]
 
     def step(self, current_price, current_time, current_usage, current_soc, current_pv, device_type):
 
@@ -339,28 +338,19 @@ class PeakValleyScheduler():
         # Update price history every five minutes
         current_time = datetime.strptime(
             current_time, '%H:%M').time()
-        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute and (current_time <= self.t_chg_end1 and current_time >= self.t_chg_start1):
+        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute: 
             self.last_updated_time = current_time
             self.price_history.append(current_price)
-        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute and (current_time <= self.t_dis_end2 and current_time >= self.t_dis_start2):
-            self.last_updated_time = current_time
-            self.peak_price_history.append(current_price)
 
-        # if len(self.price_history) > self.LookBackBars:
-        if len(self.price_history) > 24:
+        if len(self.price_history) > self.LookBackBars:
             self.price_history.pop(0)
-        if len(self.peak_price_history) > 24:
-            self.peak_price_history.pop(0)
 
-        # Buy and sell price based on historical data
-        sell_price = np.percentile(
-            self.price_history, self.SellPct)
-        buy_price = np.percentile(self.peak_price_history, self.BuyPct)
-
+        buy_price, sell_price = np.percentile(
+            self.price_history, [self.BuyPct, self.SellPct]) 
         peak_price = self.PeakPrice
         is_high_price = False
         current_feedin_price = current_price - self.price_gap
-        if current_price > np.percentile(self.peak_price_history, 90):
+        if current_price > np.percentile(self.price_history, 90):
             is_high_price = True
         else:
             current_feedin_price = current_price - 10
