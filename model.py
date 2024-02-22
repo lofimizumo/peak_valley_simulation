@@ -41,7 +41,7 @@ class Battery:
         anti_backflow = command.get('anti_backflow', True)
         power = command.get('power', 0)
         if cmd == 'Discharge' and anti_backflow:
-            power = -usage*1000
+            power = -usage*1000*2
         elif cmd == 'Discharge' and not anti_backflow:
             power = -power
         elif cmd == 'Charge':
@@ -58,13 +58,16 @@ class Battery:
 
 class MockData:
 
-    def __init__(self, file_name='friend.csv', **kwargs):
+    def __init__(self, file_name='friend.csv', year=2023, **kwargs):
+        self.year_filename_map = {
+            2022: 'qld_aemo_price_2022.csv', 2023: 'qld_price_merged.csv'}
         self.df = pd.read_csv(file_name)
         self.date_start = self.df['time'].min()
         self.date_end = self.df['time'].max()
         self.df_solar = pd.read_csv('solar_clean.csv')
         self.solar_kw = kwargs.get('solar_kw', 5)
-        self._prepare_data()
+        self._truncate_date()
+        self._prepare_price(year)
         if file_name != 'friend.csv':
             self.df = self.get_simulated_amber_price(self.df)
         self._prepare_solar_data()
@@ -77,15 +80,26 @@ class MockData:
         df['price'] = k * df['price'] + b
         return df
 
-    def read_csv_from_dir(self, dir_name):
+    @classmethod
+    def read_csv_from_dir(cls, dir_name):
         file_names = glob.glob(f'{dir_name}/*.csv')
         return file_names
 
-    def _prepare_data(self):
+    def _truncate_date(self):
         self.df['time'] = pd.to_datetime(self.df['time'])
         self.df = self.df[(self.df['time'] >= self.date_start)
                           & (self.df['time'] <= self.date_end)]
         self.df = self.df.sort_values('time')
+        self.df.drop('price', axis=1, inplace=True) 
+
+    def _prepare_price(self, year):
+        price_filename = self.year_filename_map[year]
+        price_df = pd.read_csv(price_filename)
+        price_df['date'] = pd.to_datetime(price_df['date'])
+        price_df['date'] = price_df['date'].apply(lambda x: x.replace(year=2023))
+        self.df['time'] = pd.to_datetime(self.df['time'])
+        self.df = pd.merge(self.df, price_df, left_on='time', right_on='date')
+
 
     def _prepare_solar_data(self):
         self.df_solar['date'] = pd.to_datetime(self.df_solar['date'])
@@ -127,10 +141,12 @@ class Simulator:
                  time_mode_charge_start='08:00', time_mode_charge_end='16:00',
                  is_battery_only=False,
                  solar_kw=5,
+                 year=2023,
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(max_capacity=5000)
-        self.mock_data = MockData(file_name, solar_kw=solar_kw)
+        self.mock_data = MockData(
+            file_name, year=year, solar_kw=solar_kw)
         self.cost_wo_battery = []
         self.cost_w_battery = []
         self.price_gap = price_gap
@@ -338,7 +354,7 @@ class PeakValleyScheduler():
         # Update price history every five minutes
         current_time = datetime.strptime(
             current_time, '%H:%M').time()
-        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute: 
+        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute:
             self.last_updated_time = current_time
             self.price_history.append(current_price)
 
@@ -346,7 +362,7 @@ class PeakValleyScheduler():
             self.price_history.pop(0)
 
         buy_price, sell_price = np.percentile(
-            self.price_history, [self.BuyPct, self.SellPct]) 
+            self.price_history, [self.BuyPct, self.SellPct])
         peak_price = self.PeakPrice
         is_high_price = False
         current_feedin_price = current_price - self.price_gap
@@ -443,15 +459,14 @@ class SimulationVisualizer:
 if __name__ == '__main__':
     profiler = cProfile.Profile()
     profiler.enable()
-    mock = MockData()
-    file_names = mock.read_csv_from_dir('redx_data')
+    file_names = MockData.read_csv_from_dir('redx_data')
     st.set_page_config(page_title=None, page_icon=None, layout="wide",
                        initial_sidebar_state="auto", menu_items=None)
     st.title("Peak Valley Simulation Analysis")
 
     # Run the simulation
     with st.sidebar:
-        on = st.toggle('Toggle Time Mode',value=True, help="Time Mode is a mode that uses a fixed time window for charging and discharging. When the time is within the window, the battery will charge or discharge based on the price. When the time is outside the window, the battery will be idle.")
+        on = st.toggle('Toggle Time Mode', value=False, help="Time Mode is a mode that uses a fixed time window for charging and discharging. When the time is within the window, the battery will charge or discharge based on the price. When the time is outside the window, the battery will be idle.")
         time_mode_start = st.time_input(
             "Time Mode Discharging Start", datetime.strptime('17:00', '%H:%M').time())
         time_mode_end = st.time_input(
@@ -461,6 +476,9 @@ if __name__ == '__main__':
         time_mode_charge_end = st.time_input(
             "Time Mode Charging End", datetime.strptime('13:00', '%H:%M').time())
         selected_filename = st.selectbox("Select a filename", file_names)
+        year = st.radio(
+            "Price Year",
+            [2022, 2023])
         st.write("Simulation Parameters")
         solar_on = st.toggle('Toggle Solar Only', help="Solar Only Mode")
         solar_kw = st.slider("Solar KW", 0, 15, 5, help="Solar KW")
@@ -504,6 +522,7 @@ if __name__ == '__main__':
                           is_time_mode=on,
                           is_battery_only=solar_on,
                           solar_kw=solar_kw,
+                          year=year,
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
                           time_mode_discharge_end=time_mode_end.strftime(
@@ -618,7 +637,8 @@ if __name__ == '__main__':
             combined_data = pd.merge(
                 usages, df_30min[['time', 'power_delta']], on='time', how='left')
             combined_data.set_index('time', inplace=True)
+            combined_data['power_delta'] = combined_data['power_delta']*2
 
             st.line_chart(combined_data)
-            st.bar_chart(df_30min, x='time', y='power_delta')
+            # st.bar_chart(df_30min, x='time', y='power_delta')
             st.bar_chart(df_30min, x='time', y='price')
