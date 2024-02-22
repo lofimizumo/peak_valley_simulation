@@ -78,6 +78,7 @@ class MockData:
         b = 10
         df['price'] = df['price'] / 10
         df['price'] = k * df['price'] + b
+        df['price'] = df['price'].clip(0, 300)
         return df
 
     @classmethod
@@ -478,7 +479,8 @@ if __name__ == '__main__':
         selected_filename = st.selectbox("Select a filename", file_names)
         year = st.radio(
             "Price Year",
-            [2022, 2023])
+            [2022, 2023],
+            index=1)
         st.write("Simulation Parameters")
         solar_on = st.toggle('Toggle Solar Only', help="Solar Only Mode")
         solar_kw = st.slider("Solar KW", 0, 15, 5, help="Solar KW")
