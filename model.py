@@ -78,7 +78,7 @@ class MockData:
         b = 10
         df['price'] = df['price'] / 10
         df['price'] = k * df['price'] + b
-        df['price'] = df['price'].clip(0, 300)
+        # df['price'] = df['price'].clip(0, 300)
         return df
 
     @classmethod
@@ -98,8 +98,11 @@ class MockData:
         price_df = pd.read_csv(price_filename)
         price_df['date'] = pd.to_datetime(price_df['date'])
         price_df['date'] = price_df['date'].apply(lambda x: x.replace(year=2023))
+        price_df.set_index('date', inplace=True)
+        resampled_price = price_df['price'].resample('30T').mean()
+        resampled_price = resampled_price.reset_index()
         self.df['time'] = pd.to_datetime(self.df['time'])
-        self.df = pd.merge(self.df, price_df, left_on='time', right_on='date')
+        self.df = pd.merge(self.df, resampled_price, left_on='time', right_on='date')
 
 
     def _prepare_solar_data(self):
