@@ -116,7 +116,7 @@ class MockData:
         std = 50
         self.y = np.exp(-((x - mean) ** 2) / (std ** 2)) * self.solar_kw * 1000
         np.random.seed(1234)
-        rain_distribution = np.random.uniform(0.1, 1, 289)
+        # rain_distribution = np.random.uniform(0.1, 1, 289)
         # self.y = self.y * rain_distribution
 
     def _prepare_pv_data(self):
@@ -136,6 +136,9 @@ class MockData:
 
     def get_usages(self, date) -> pd.Series:
         return self.df[self.df['date'] == date][['time', 'usage']]
+    
+    def get_pvs(self, date) -> pd.Series:
+        return self.df[self.df['date'] == date][['time', 'current_pv']]
 
 
 class Simulator:
@@ -175,6 +178,9 @@ class Simulator:
 
     def get_usages(self, date: date) -> pd.Series:
         return self.mock_data.get_usages(date)
+    
+    def get_pvs(self, date: date) -> pd.Series:
+        return self.mock_data.get_pvs(date)
 
     def get_time_mode_command(self, current_time):
         if self.is_time_mode:
@@ -634,16 +640,23 @@ if __name__ == '__main__':
         day = st.date_input("Please choose date", date(2023, 9, 17))
         usages = simulator.get_usages(np.datetime64(day))
         usages['usage'] = usages['usage'] * 2000
+        pvs = simulator.get_pvs(np.datetime64(day))
+        pvs['current_pv'] = pvs['current_pv']
 
         df_30min = sim_visualizer.get_resampled_data(day)
         if not df_30min.empty:
             df_30min['time'] = pd.to_datetime(df_30min['time'])
             usages['time'] = pd.to_datetime(usages['time'])
+            pvs['time'] = pd.to_datetime(pvs['time'])
             combined_data = pd.merge(
                 usages, df_30min[['time', 'power_delta']], on='time', how='left')
+            combined_data = pd.merge(
+                combined_data, pvs[['time', 'current_pv']], on='time', how='left')
             combined_data.set_index('time', inplace=True)
             combined_data['power_delta'] = combined_data['power_delta']*2
 
-            st.line_chart(combined_data)
+            st.line_chart(combined_data, color=['#338F37', '#A1A12B', '#23BFA7'])
             # st.bar_chart(df_30min, x='time', y='power_delta')
             st.bar_chart(df_30min, x='time', y='price')
+
+    date = datetime.strptime('2023-09-17', '%Y-%m-%d').date()
