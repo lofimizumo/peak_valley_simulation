@@ -2,7 +2,7 @@ import os
 import csv
 import pandas as pd
 from datetime import datetime, timedelta
-from amber_fetcher import get_prices
+from ignoreme.amber_fetcher import get_prices
 
 def change_csv_headers(directory_path):
     for filename in os.listdir(directory_path):

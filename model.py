@@ -38,13 +38,12 @@ class Battery:
         self.soc = 0.1
         self.current_capacity_kw = self.max_capacity * self.soc
 
-    def get_actual_power_delta(self, command, usage):
+    def get_actual_power_delta(self, command, load_power_kw):
         cmd = command.get('command', 'Idle')
         anti_backflow = command.get('anti_backflow', True)
         power_kw = command.get('power', 0)/1000  # Convert to KW
         if cmd == 'Discharge' and anti_backflow:
-            # original usage data is per half hour, so we need to multiply by 2 to get the hourly usage
-            power_kw = -2*usage
+            power_kw = -load_power_kw
             power_kw = max(power_kw, -2.5)
         elif cmd == 'Discharge' and not anti_backflow:
             power_kw = -power_kw
@@ -125,7 +124,7 @@ class MockData:
         std = 28
         gaussian_left = np.exp(-((x - mean_left) ** 2) / (std ** 2))
         gaussian_right = np.exp(-((x - mean_right) ** 2) / (std ** 2))
-        self.y = 7/8*(gaussian_left + gaussian_right) * self.solar_kw * 1000
+        self.y = 8/9*(gaussian_left + gaussian_right) * self.solar_kw * 1000
         # self.y = self.y*0.9
 
         np.random.seed(1234)
@@ -145,13 +144,13 @@ class MockData:
 
     def get_all_data(self):
         # Return the DataFrame instead of a generator
-        return self.df[['time', 'price', 'current_pv', 'usage']]
+        return self.df[['time', 'price', 'current_pv', 'usage']].copy()
 
     def get_usages(self, date) -> pd.Series:
-        return self.df[self.df['date'] == date][['time', 'usage']]
+        return self.df[self.df['date'] == date][['time', 'usage']].copy()
 
     def get_pvs(self, date) -> pd.Series:
-        return self.df[self.df['date'] == date][['time', 'current_pv']]
+        return self.df[self.df['date'] == date][['time', 'current_pv']].copy()
 
 
 class Simulator:
@@ -202,7 +201,7 @@ class Simulator:
             if current_time >= self.time_mode_discharge_start and current_time < self.time_mode_discharge_end:
                 return {'command': 'Discharge', 'power': self.discharge_power, 'anti_backflow': False}
             if current_time >= self.time_mode_charge_start and current_time <= self.time_mode_charge_end:
-                return {'command': 'Charge', 'power': 1500, 'grid_charge': False}
+                return {'command': 'Charge', 'power': self.charge_power, 'grid_charge': False}
         return {'command': 'Idle'}
 
     def run_simulation(self):
@@ -211,6 +210,7 @@ class Simulator:
         mock_data_df['price_dollar'] = mock_data_df['price'] / 100
         mock_data_df['usage_with_pv'] = mock_data_df['usage'] - \
             mock_data_df['current_pv'] / 1000
+        mock_data_df['load_power_kw'] = mock_data_df['usage'] * 2
 
         # Initialize lists for collecting data
         battery_soc_list, battery_capacity_list, action_list, power_delta_list, max_power_feedin, high_price_list = [], [], [], [], [], []
@@ -241,7 +241,7 @@ class Simulator:
 
             # 3. Update battery state
             power_delta = self.battery_stats.get_actual_power_delta(
-                command, row['usage'])['power_delta']
+                command, row['load_power_kw'])['power_delta']
             action = command.get('command', 'Idle')
             battery_soc_list.append(f'{self.battery_stats.soc:.2%}')
             battery_capacity_list.append(
@@ -250,11 +250,11 @@ class Simulator:
             power_delta_list.append(power_delta)
             high_price_list.append(is_high_price)
             solar_kw_list.append(row['current_pv']/1000)
-            load_list.append(row['usage'])
+            load_list.append(row['load_power_kw'])
             grid_with_battery_solar_list.append(
-                row['usage'] - row['current_pv']/1000 + power_delta)
+                row['load_power_kw'] - row['current_pv']/1000 + 2*power_delta) # 2*power_delta because power_delta is in kwh per half hour, so we need to multiply by 2 to get the hourly power in kw
             grid_without_battery_list.append(
-                row['usage'] - row['current_pv']/1000)
+                row['load_power_kw'] - row['current_pv']/1000)
             buy_price_list.append(buy_price)
             sell_price_list.append(sell_price)
             peak_price_list.append(peak_price)
@@ -288,13 +288,13 @@ class Simulator:
         mock_data_df['feedin_price_dollar'] = (
             mock_data_df['price'] - mock_data_df['price_gap']) / 100
         mock_data_df['feedin_price_dollar'] = mock_data_df['feedin_price_dollar'].clip(
-            lower=-5)
+            lower=0)
         mock_data_df['usage_with_pv_battery'] = mock_data_df['usage_with_pv'] + \
             mock_data_df['power_delta']
         mock_data_df['cost_wo_battery'] = mock_data_df['price_dollar'] * \
             mock_data_df['usage']
         mock_data_df['cost_w_battery'] = mock_data_df.apply(
-            lambda row: (row['feedin_price_dollar'] if row['usage_with_pv_battery'] < 0 else row['price_dollar']) * row['usage_with_pv_battery'], axis=1)
+            lambda row: (row['feedin_price_dollar'] if row['grid_with_battery_solar'] < 0 else row['price_dollar']) * 0.5*row['grid_with_battery_solar'], axis=1)
 
         # Calculate total cost and savings
         total_cost_wo_battery = mock_data_df['cost_wo_battery'].sum()
@@ -313,8 +313,8 @@ class Simulator:
         final_df = mock_data_df[['time', 'battery_soc', 'battery_capacity_Kwh', 'price',
                                  'action', 'cost_wo_battery', 'cost_w_battery', 'power_delta', 'solar_kw', 'charging_discharging_power', 'load', 'grid_with_battery_solar', 'grid_without_battery', 'buy_price', 'sell_price', 'peak_price', 'anti_backflow']]
         final_df.rename(columns={'time': 'time', 'price': 'price',
-                                 'cost_wo_battery': 'cost', 'cost_w_battery': 'cost_savings', 'charging_discharging_power': 'battery_power (kw)',
-                                 'power_delta': 'power_delta (kw)', 'solar_kw': 'solar (kw)', 'load': 'load (kw)',
+                                 'cost_wo_battery': 'cost', 'cost_w_battery': 'cost_with_solar_bat', 'charging_discharging_power': 'battery_power (kw)',
+                                 'power_delta': 'power_delta (kWh)', 'solar_kw': 'solar (kw)', 'load': 'load (kw)',
                                  'grid_with_battery_solar': 'grid_w/battery_solar (kw)', 'grid_without_battery': 'grid_w/o_battery (kw)',
                                  'buy_price': 'buy_price (c)', 'sell_price': 'sell_price (c)',
                                  'peak_price': 'peak_price (c)', 'anti_backflow': 'anti_backflow'}, inplace=True)
@@ -369,8 +369,6 @@ class PeakValleyScheduler():
         self.ChgEnd1 = ChgEnd1
         self.DisChgStart2 = DisChgStart2
         self.DisChgEnd2 = DisChgEnd2
-        self.DisChgStart1 = '0:00'
-        self.DisChgEnd1 = '04:00'
         self.PeakStart = '18:00'
         self.PeakEnd = '20:00'
 
@@ -393,10 +391,6 @@ class PeakValleyScheduler():
             self.DisChgStart2, '%H:%M').time()
         self.t_dis_end2 = datetime.strptime(
             self.DisChgEnd2, '%H:%M').time()
-        self.t_dis_start1 = datetime.strptime(
-            self.DisChgStart1, '%H:%M').time()
-        self.t_dis_end1 = datetime.strptime(
-            self.DisChgEnd1, '%H:%M').time()
         self.t_peak_start = datetime.strptime(
             self.PeakStart, '%H:%M').time()
         self.t_peak_end = datetime.strptime(
@@ -486,7 +480,14 @@ class PeakValleyScheduler():
         command = {"command": "Idle"}
 
         if self._is_charging_period(current_time) and ((current_price <= buy_price) or (current_pv > current_usage)):
-            power = 2500 if device_type == "5000" else 1500
+            maxpower = 2500 if device_type == "5000" else 1500
+            excess_solar = 1000*(current_pv - current_usage)
+            if excess_solar > 0:
+                power = min(maxpower, excess_solar)
+                # logging.info(
+                #     f"Increase charging power due to excess solar: {excess_solar}, adjusted power: {power}")
+            else:
+                power = min(max((5000 - 1000*current_usage), 0), maxpower)
             command = {'command': 'Charge', 'power': power,
                        'grid_charge': True if current_pv <= current_usage else False}
 
@@ -509,7 +510,7 @@ class PeakValleyScheduler():
 
     def _is_discharging_period(self, t):
         # return True
-        return (t >= self.t_dis_start2 and t <= self.t_dis_end2) or (t >= self.t_dis_start1 and t <= self.t_dis_end1)
+        return (t >= self.t_dis_start2 and t <= self.t_dis_end2) 
 
     def _is_peak_period(self, t):
         return t >= self.t_peak_start and t <= self.t_peak_end
@@ -556,7 +557,7 @@ class SimulationVisualizer:
                          & (self.df['time'] < end_date)]
         if df_day.empty:
             return pd.DataFrame()
-        df_30min = df_day[['time', 'price', 'power_delta (kw)']
+        df_30min = df_day[['time', 'price', 'battery_power (kw)']
                           ].resample('30min', on='time').median()
         return df_30min.reset_index()
 
@@ -729,9 +730,9 @@ if __name__ == '__main__':
             f'<div class="usage-box data-point">Return of Investment: {roi} year</div>', unsafe_allow_html=True)
 
         df_discharge = df[df['action'] == 'Discharge']
-        df_discharge = df_discharge[df_discharge['power_delta (kw)'] < 0]
+        df_discharge = df_discharge[df_discharge['power_delta (kWh)'] < 0]
         hist_discharge = np.histogram(df_discharge['price'], bins=[
-            0, 10, 20, 30, 40, 50, 60, 70, 80, 100, 120, 140, 160, 180, 200, 1000], weights=0.1*df_discharge['power_delta (kw)'])
+            0, 10, 20, 30, 40, 50, 60, 70, 80, 100, 120, 140, 160, 180, 200, 1000], weights=0.1*df_discharge['power_delta (kWh)'])
         df_hist = pd.DataFrame(hist_discharge)
         df_hist_inverted = df_hist.T
         df_hist_inverted.columns = ['y', 'x']
@@ -745,9 +746,9 @@ if __name__ == '__main__':
     with col2:
         st.subheader("Battery Discharging Distribution by Time")
         sim_visualizer = SimulationVisualizer(df)
-        day = st.date_input("Please choose date", date(2023, 9, 17))
+        day = st.date_input("Please choose date", date(2023, 1, 5))
         usages = simulator.get_usages(np.datetime64(day))
-        usages['usage'] = usages['usage'] * 2*1000
+        usages['usage'] = usages['usage'] *2*1000
         pvs = simulator.get_pvs(np.datetime64(day))
         pvs['current_pv'] = pvs['current_pv']
 
@@ -757,14 +758,14 @@ if __name__ == '__main__':
             usages['time'] = pd.to_datetime(usages['time'])
             pvs['time'] = pd.to_datetime(pvs['time'])
             combined_data = pd.merge(
-                usages, df_30min[['time', 'power_delta (kw)']], on='time', how='left')
+                usages, df_30min[['time', 'battery_power (kw)']], on='time', how='left')
             combined_data = pd.merge(
                 combined_data, pvs[['time', 'current_pv']], on='time', how='left')
             combined_data.set_index('time', inplace=True)
             # show in watts
-            combined_data['power_delta (kw)'] = combined_data['power_delta (kw)']*2*1000
+            combined_data['battery_power (kw)'] = combined_data['battery_power (kw)']*1000
             combined_data.rename(
-                columns={'power_delta (kw)': ' power (W)', 'usage': 'load (W)', 'current_pv': 'solar power (W)'}, inplace=True)
+                columns={'battery_power (kw)': ' power (W)', 'usage': 'load (W)', 'current_pv': 'solar power (W)'}, inplace=True)
 
             st.line_chart(combined_data, color=[
                           '#338F37', '#A1A12B', '#23BFA7'])
