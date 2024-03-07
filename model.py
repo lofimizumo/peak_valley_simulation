@@ -24,6 +24,7 @@ from datetime import datetime, date
 import pandas as pd
 import numpy as np
 import streamlit as st
+import math
 import glob
 import cProfile
 import pstats
@@ -38,21 +39,22 @@ class Battery:
         self.soc = 0.1
         self.current_capacity_kw = self.max_capacity * self.soc
 
-    def get_actual_power_delta(self, command, load_power_kw):
+    def get_actual_power_delta(self, command, load_power_kw, pv_w):
         cmd = command.get('command', 'Idle')
         anti_backflow = command.get('anti_backflow', True)
         power_kw = command.get('power', 0)/1000  # Convert to KW
+        battery_num = self.max_capacity/5  # 5KWh per battery
+        pv_kw = pv_w/1000
         if cmd == 'Discharge' and anti_backflow:
-            power_kw = -load_power_kw
-            power_kw = max(power_kw, -2.5)
+            power_kw = -(max(load_power_kw - pv_kw, 0))
+            power_kw = max(power_kw, -2.5*battery_num)
         elif cmd == 'Discharge' and not anti_backflow:
-            power_kw = -power_kw
+            power_kw = -power_kw*battery_num
         elif cmd == 'Charge':
             power_kw = power_kw
+            power_kw = power_kw * battery_num
         elif cmd == 'Idle':
             power_kw = 0
-        battery_num = self.max_capacity/5  # 5KWh per battery
-        power_kw = power_kw * battery_num
         delta_power_kwh = power_kw * self.cycle_times / 60
         new_capacity_kw = max(self.max_capacity*self.min_soc, min(self.current_capacity_kw +
                                                                   delta_power_kwh, self.max_capacity))
@@ -64,16 +66,24 @@ class Battery:
 
 class MockData:
 
-    def __init__(self, file_name='friend.csv', year=2023, **kwargs):
-        self.year_filename_map = {
-            2022: 'qld_aemo_price_2022.csv', 2023: 'qld_price_merged.csv'}
+    def __init__(self, file_name='friend.csv', price_file_name='QLD_2022',
+                 prophet_mode=False,
+                 **kwargs):
+        self.dir = 'price_data'
+        self.price_filename_map = {
+            'QLD_2022': 'price_data/qld_aemo_price_2022.csv',
+            'QLD_2023': 'price_data/qld_aemo_price_2023.csv',
+            'NSW_2023': 'price_data/nsw_aemo_price_2023.csv',
+            'NSW_2022': 'price_data/nsw_aemo_price_2022.csv'}
+
+        self.prophet_mode = prophet_mode
         self.df = pd.read_csv(file_name)
         self.date_start = self.df['time'].min()
         self.date_end = self.df['time'].max()
         self.df_solar = pd.read_csv('solar_clean.csv')
         self.solar_kw = kwargs.get('solar_kw', 5)
         self._truncate_date()
-        self._prepare_price(year)
+        self._prepare_price(price_file_name)
         if file_name != 'friend.csv':
             self.df = self.get_simulated_amber_price(self.df)
         self._prepare_solar_data()
@@ -97,17 +107,32 @@ class MockData:
         self.df = self.df[(self.df['time'] >= self.date_start)
                           & (self.df['time'] <= self.date_end)]
         self.df = self.df.sort_values('time')
-        self.df.drop('price', axis=1, inplace=True)
+        if 'price' in self.df.columns:
+            self.df.drop('price', axis=1, inplace=True)
 
-    def _prepare_price(self, year):
-        price_filename = self.year_filename_map[year]
-        price_df = pd.read_csv(price_filename)
+    def _add_peak_times(self, df):
+        def calculate_peak_times(group):
+            max_price_row = group.loc[group['price'].idxmax()]
+            group['Peak time start'] = max_price_row['date'] - pd.Timedelta(hours=1)
+            group['Peak time end'] = max_price_row['date'] + pd.Timedelta(hours=1)
+            return group
+        df['date'] = pd.to_datetime(df['date']) 
+        df['date_only'] = df['date'].dt.date  # Extract date part for grouping
+        grouped = df.groupby('date_only').apply(calculate_peak_times)
+        grouped.drop('date_only', axis=1, inplace=True)
+        return grouped
+
+    def _prepare_price(self, price_file_name):
+        filename = self.price_filename_map[price_file_name]
+        price_df = pd.read_csv(filename)
         price_df['date'] = pd.to_datetime(price_df['date'])
         price_df['date'] = price_df['date'].apply(
             lambda x: x.replace(year=2023))
         price_df.set_index('date', inplace=True)
         resampled_price = price_df['price'].resample('30T').mean()
         resampled_price = resampled_price.reset_index()
+        if self.prophet_mode:
+            resampled_price = self._add_peak_times(resampled_price)
         self.df['time'] = pd.to_datetime(self.df['time'])
         self.df = pd.merge(self.df, resampled_price,
                            left_on='time', right_on='date')
@@ -144,7 +169,7 @@ class MockData:
 
     def get_all_data(self):
         # Return the DataFrame instead of a generator
-        return self.df[['time', 'price', 'current_pv', 'usage']].copy()
+        return self.df.copy()
 
     def get_usages(self, date) -> pd.Series:
         return self.df[self.df['date'] == date][['time', 'usage']].copy()
@@ -160,17 +185,20 @@ class Simulator:
                  time_mode_charge_start='08:00', time_mode_charge_end='16:00',
                  is_battery_only=False,
                  solar_kw=5,
-                 year=2023,
+                 price_file_name='QLD_2022',
+                 prophet_mode=False,
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(**kwargs)
         self.mock_data = MockData(
-            file_name, year=year, solar_kw=solar_kw)
+            file_name, price_file_name=price_file_name, solar_kw=solar_kw, prophet_mode=prophet_mode)
+        self.dataset = self.mock_data.get_all_data().copy()
         self.cost_wo_battery = []
         self.cost_w_battery = []
         self.price_gap = price_gap
         self.is_time_mode = is_time_mode
         self.is_battery_only = is_battery_only
+        self.prophet_mode = prophet_mode
         self.time_mode_discharge_start = datetime.strptime(
             time_mode_discharge_start, '%H:%M').time()
         self.time_mode_discharge_end = datetime.strptime(
@@ -187,7 +215,6 @@ class Simulator:
             0, min(2500*120/total_discharge_duration, 2500))
         self.charge_power = max(
             0, min(1500*120/total_charge_duration, 1500))
-        self.dataset = self.mock_data.get_all_data().copy()
 
     def get_usages(self, date: date) -> pd.Series:
         return self.mock_data.get_usages(date)
@@ -229,9 +256,15 @@ class Simulator:
             now = row['time'].strftime('%H:%M')
 
             # 2. Model step
-            command, is_high_price, buy_price, sell_price, peak_price = self.model.step(
-                row['price'], now, row['usage'],
-                self.battery_stats.current_capacity_kw, row['current_pv'] / 1000, device_type="2505")
+            if self.prophet_mode:
+                command, is_high_price, buy_price, sell_price, peak_price = self.model.step_with_peak_time(
+                    row['price'], now, row['load_power_kw'],
+                    self.battery_stats.current_capacity_kw, row['current_pv'] / 1000, device_type="2505",
+                    peak_start=row['Peak time start'], peak_end=row['Peak time end'])
+            else:
+                command, is_high_price, buy_price, sell_price, peak_price = self.model.step(
+                    row['price'], now, row['load_power_kw'],
+                    self.battery_stats.current_capacity_kw, row['current_pv'] / 1000, device_type="2505")
             if self.is_time_mode:
                 command = self.get_time_mode_command(now)
                 is_high_price = True
@@ -241,7 +274,7 @@ class Simulator:
 
             # 3. Update battery state
             power_delta = self.battery_stats.get_actual_power_delta(
-                command, row['load_power_kw'])['power_delta']
+                command, row['load_power_kw'], row['current_pv'])['power_delta']
             action = command.get('command', 'Idle')
             battery_soc_list.append(f'{self.battery_stats.soc:.2%}')
             battery_capacity_list.append(
@@ -252,7 +285,7 @@ class Simulator:
             solar_kw_list.append(row['current_pv']/1000)
             load_list.append(row['load_power_kw'])
             grid_with_battery_solar_list.append(
-                row['load_power_kw'] - row['current_pv']/1000 + 2*power_delta) # 2*power_delta because power_delta is in kwh per half hour, so we need to multiply by 2 to get the hourly power in kw
+                row['load_power_kw'] - row['current_pv']/1000 + 2*power_delta)  # 2*power_delta because power_delta is in kwh per half hour, so we need to multiply by 2 to get the hourly power in kw
             grid_without_battery_list.append(
                 row['load_power_kw'] - row['current_pv']/1000)
             buy_price_list.append(buy_price)
@@ -273,7 +306,7 @@ class Simulator:
         mock_data_df['is_high_price'] = high_price_list
         mock_data_df['solar_kw'] = solar_kw_list
         mock_data_df['charging_discharging_power'] = [
-            2*x for x in power_delta_list]
+            -2*x for x in power_delta_list]
         mock_data_df['load'] = load_list
         mock_data_df['grid_with_battery_solar'] = grid_with_battery_solar_list
         mock_data_df['grid_without_battery'] = grid_without_battery_list
@@ -401,7 +434,9 @@ class PeakValleyScheduler():
         self.price_history = [20 for i in range(self.LookBackBars)]
 
     def step_with_fixed_lookback_price(self, current_price, current_time, current_usage, current_soc, current_pv, device_type):
-
+        """
+        The lookback window will only update for each day 
+        """
         # Update battery state
         self.bat_cap = current_soc * self.BatCap
 
@@ -449,6 +484,82 @@ class PeakValleyScheduler():
                        'power': power, 'anti_backflow': False}
         return command, is_high_price, buy_price, sell_price, peak_price
 
+    def _discharge_confidence(self, current_price):
+        """
+        Calculate the discharge confidence level based on the current price.
+
+        Parameters:
+        current_price (float): The current price value.
+
+        Returns:
+        float (0-1): The discharge confidence level.
+        """
+        conf_level = 0.97 - 0.8824 * math.exp(-0.033 * current_price)
+        return conf_level
+
+    def step_with_peak_time(self, current_price, current_time, current_usage, current_soc, current_pv,
+                            device_type,
+                            peak_start=None, peak_end=None):
+
+        # Update battery state
+        self.bat_cap = current_soc * self.BatCap
+
+        # Update price history every five minutes
+        current_time = datetime.strptime(
+            current_time, '%H:%M').time()
+
+        if self.last_updated_time is None or current_time.minute != self.last_updated_time.minute:
+            self.last_updated_time = current_time
+            self.price_history.append(current_price)
+
+        if len(self.price_history) > self.LookBackBars:
+            self.price_history.pop(0)
+
+        buy_price, sell_price = np.percentile(
+            self.price_history, [self.BuyPct, self.SellPct])
+        peak_price = np.percentile(
+            self.price_history, self.PeakPct)
+        fixed_peak_price = self.PeakPrice
+        is_high_price = False
+        current_feedin_price = current_price - self.price_gap
+        if current_price > np.percentile(self.price_history, 90):
+            is_high_price = True
+        else:
+            current_feedin_price = current_price - 10
+
+        command = {"command": "Idle"}
+
+        if self._is_charging_period(current_time) and ((current_price <= buy_price) or (current_pv > current_usage)):
+            maxpower = 2500 if device_type == "5000" else 1500
+            minpower = 1250 if device_type == "5000" else 700
+            power = minpower
+            excess_solar = 1000*(current_pv - current_usage)
+            if excess_solar > 0:
+                power = min(max(minpower, excess_solar), maxpower)
+                # logging.info(
+                #     f"Increase charging power due to excess solar: {excess_solar}, adjusted power: {power}")
+            else:
+                power = minpower
+            command = {'command': 'Charge', 'power': power,
+                       'grid_charge': True if current_pv <= current_usage else False}
+
+        power = 5000 if device_type == "5000" else 2500
+
+        def _is_discharging_period(t):
+            nonlocal peak_start, peak_end
+            peak_start = peak_start.time()
+            peak_end = peak_end.time()
+            return (t >= peak_start and t <= peak_end)
+        if _is_discharging_period(current_time) and (current_price >= sell_price) and (current_price >= self.JCParam1):
+            power = 2500
+            command = {'command': 'Discharge', 'power': power,
+                       'anti_backflow': False}
+
+        if current_price > fixed_peak_price and current_pv < current_usage:
+            command = {'command': 'Discharge',
+                       'power': power, 'anti_backflow': False}
+        return command, is_high_price, buy_price, sell_price, peak_price
+
     def step(self, current_price, current_time, current_usage, current_soc, current_pv, device_type):
 
         # Update battery state
@@ -481,20 +592,30 @@ class PeakValleyScheduler():
 
         if self._is_charging_period(current_time) and ((current_price <= buy_price) or (current_pv > current_usage)):
             maxpower = 2500 if device_type == "5000" else 1500
+            minpower = 1250 if device_type == "5000" else 700
+            power = minpower
             excess_solar = 1000*(current_pv - current_usage)
             if excess_solar > 0:
-                power = min(maxpower, excess_solar)
+                power = min(max(minpower, excess_solar), maxpower)
                 # logging.info(
                 #     f"Increase charging power due to excess solar: {excess_solar}, adjusted power: {power}")
             else:
-                power = min(max((5000 - 1000*current_usage), 0), maxpower)
+                power = minpower
             command = {'command': 'Charge', 'power': power,
                        'grid_charge': True if current_pv <= current_usage else False}
 
         power = 5000 if device_type == "5000" else 2500
         if self._is_discharging_period(current_time) and (current_price >= sell_price) and (current_price >= self.JCParam1):
-            anti_backflow = False if current_price > np.percentile(
-                self.price_history, self.PeakPct) else True
+            anti_backflow = True
+            anti_backflow_threshold = np.percentile(
+                self.price_history, self.PeakPct)
+            if current_price > anti_backflow_threshold:
+                anti_backflow = False
+                conf_level = self._discharge_confidence(
+                    current_price-anti_backflow_threshold)
+                power = power * conf_level
+                # Add 1000W to the power as the starting power
+                power = max(min(power+900, 2500), 1000)
             anti_backflow = True if current_price <= self.JCParam2 else anti_backflow
 
             command = {'command': 'Discharge', 'power': power,
@@ -510,7 +631,7 @@ class PeakValleyScheduler():
 
     def _is_discharging_period(self, t):
         # return True
-        return (t >= self.t_dis_start2 and t <= self.t_dis_end2) 
+        return (t >= self.t_dis_start2 and t <= self.t_dis_end2)
 
     def _is_peak_period(self, t):
         return t >= self.t_peak_start and t <= self.t_peak_end
@@ -578,7 +699,9 @@ if __name__ == '__main__':
     st.title("Peak Valley Simulation Analysis")
 
     # Run the simulation
-    with st.sidebar:
+    # if st.button("Start"):
+    #     st.rerun()
+    with st.sidebar.form("my_form", border=False):
         selected_filename = st.selectbox("Device", file_names)
         st.markdown("---")
         st.write("Time Mode Settings")
@@ -594,13 +717,15 @@ if __name__ == '__main__':
         st.markdown("---")
         st.write("Simulation Parameters")
         solar_on = st.toggle('Toggle Solar Only', help="Solar Only Mode")
-        year = st.radio(
-            "Price Year",
-            [2022, 2023],
+        price_file_name = st.radio(
+            "Price Data",
+            ['QLD_2022', 'QLD_2023', 'NSW_2022', 'NSW_2023'],
             index=1)
-        solar_kw = st.slider("Solar (kW)", 0, 15, 5, help="Solar kW")
+        prophet_mode = st.toggle('Toggle Prophet Mode on NSW 2022', value=True,
+                                 help="Use the Best Discharging Window based on the historical data in 2022. This mode is only available for NSW 2022.")
+        solar_kw = st.slider("Solar (kW)", 0, 100, 5, step=5, help="Solar kW")
         battery_capacity = st.slider(
-            "Battery Capacity (kWh)", 1, 30, 5, help="Battery Capacity in kWh")
+            "Battery Capacity (kWh)", 0, 430, 5, step=5, help="Battery Capacity in kWh")
         buy_percentile = st.slider(
             "Buy percentile (%)", 1, 100, 20, help="Start to charge battery when price is below this value")
         sell_percentile = st.slider(
@@ -637,6 +762,7 @@ if __name__ == '__main__':
             "Max Discharging Threshold", 0, 1000, 0, help="The value of fixed max discharging (anti-backflow disabled) price threshold")
         jc_param3 = st.slider(
             "Charging Price Threshold", 0, 1000, 0, help="The value of fixed charging price threshold")
+        submitted = st.form_submit_button("Run🔎")
 
     simulator = Simulator(date_start='2023-01-01', date_end='2023-12-31', price_gap=high_price_gap, file_name=selected_filename,
                           buy_percentile=buy_percentile,
@@ -650,7 +776,8 @@ if __name__ == '__main__':
                           is_battery_only=solar_on,
                           solar_kw=solar_kw,
                           max_capacity=battery_capacity,
-                          year=year,
+                          price_file_name=price_file_name,
+                          prophet_mode=prophet_mode,
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
                           time_mode_discharge_end=time_mode_end.strftime(
@@ -699,6 +826,8 @@ if __name__ == '__main__':
         total_usage = f"{ret['total_backflow']:.2f}%"
         percent_renewables = f"{percentage:.2f}%"
         roi = f"{(solar_cost_perKw * solar_kw + battery_cost_perKw * battery_capacity)/int(ret['money_made']):.1f}" if solar_cost_perKw and battery_cost_perKw else "N/A"
+        if solar_on:
+            roi = f"{(solar_cost_perKw * solar_kw)/int(ret['money_made']):.1f}" if solar_cost_perKw else "N/A"
 
         # UI layout
         col_1,  col_3, col_4 = st.columns(3)
@@ -748,7 +877,7 @@ if __name__ == '__main__':
         sim_visualizer = SimulationVisualizer(df)
         day = st.date_input("Please choose date", date(2023, 1, 5))
         usages = simulator.get_usages(np.datetime64(day))
-        usages['usage'] = usages['usage'] *2*1000
+        usages['usage'] = usages['usage'] * 2*1000
         pvs = simulator.get_pvs(np.datetime64(day))
         pvs['current_pv'] = pvs['current_pv']
 
