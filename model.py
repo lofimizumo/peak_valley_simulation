@@ -194,6 +194,7 @@ class Simulator:
                  solar_kw=5,
                  price_file_name='QLD_2022',
                  prophet_mode=False,
+                 dynamic_power=True,
                  **kwargs):
         self.model = PeakValleyScheduler(**kwargs)
         self.battery_stats = Battery(**kwargs)
@@ -206,6 +207,7 @@ class Simulator:
         self.is_time_mode = is_time_mode
         self.is_battery_only = is_battery_only
         self.prophet_mode = prophet_mode
+        self.dynamic_power = dynamic_power
         self.time_mode_discharge_start = datetime.strptime(
             time_mode_discharge_start, '%H:%M').time()
         self.time_mode_discharge_end = datetime.strptime(
@@ -271,7 +273,7 @@ class Simulator:
             else:
                 command, is_high_price, buy_price, sell_price, peak_price = self.model.step(
                     row['price'], now, row['load_power_kw'],
-                    self.battery_stats.current_capacity_kw, row['current_pv'] / 1000, device_type="2505")
+                    self.battery_stats.current_capacity_kw, row['current_pv'] / 1000, device_type="2505", dynamic_power=self.dynamic_power)
             if self.is_time_mode:
                 command = self.get_time_mode_command(now)
                 is_high_price = True
@@ -580,7 +582,7 @@ class PeakValleyScheduler():
                        'power': power, 'anti_backflow': False}
         return command, is_high_price, buy_price, sell_price, peak_price
 
-    def step(self, current_price, current_time, current_usage, current_soc, current_pv, device_type):
+    def step(self, current_price, current_time, current_usage, current_soc, current_pv, device_type, dynamic_power = True):
 
         # Update battery state
         self.bat_cap = current_soc * self.BatCap
@@ -636,11 +638,13 @@ class PeakValleyScheduler():
                 self.price_history, self.PeakPct)
             if current_price > anti_backflow_threshold:
                 anti_backflow = False
-                conf_level = self._discharge_confidence(
-                    current_price-anti_backflow_threshold)
-                power = power * conf_level
-                # Add 1000W to the power as the starting power
-                power = max(min(power+900, 2500), 1000)
+                if dynamic_power:
+                    conf_level = self._discharge_confidence(
+                        current_price-anti_backflow_threshold)
+                    power = power * conf_level
+                    # Add 1000W to the power as the starting power
+                    power = max(min(power+900, 2500), 1000)
+            
             anti_backflow = True if current_price <= self.JCParam2 else anti_backflow
 
             command = {'command': 'Discharge', 'power': power,
@@ -749,6 +753,7 @@ if __name__ == '__main__':
             index=1)
         prophet_mode = st.toggle('Toggle Prophet Mode', value=False,
                                  help="Use the Best Discharging Window based on the historical data in 2022. This mode is only available for NSW 2022.")
+        dynamic_power = st.toggle('Toggle Dynamic Power', value=True, help="Use the dynamic power for discharging")
         solar_kw = st.number_input(
             "Solar (kW)", value=5, placeholder="Type in (kW)")
         battery_capacity = st.number_input(
@@ -805,6 +810,7 @@ if __name__ == '__main__':
                           max_capacity=battery_capacity,
                           price_file_name=price_file_name,
                           prophet_mode=prophet_mode,
+                          dynamic_power=dynamic_power,
                           time_mode_discharge_start=time_mode_start.strftime(
                               '%H:%M'),
                           time_mode_discharge_end=time_mode_end.strftime(
